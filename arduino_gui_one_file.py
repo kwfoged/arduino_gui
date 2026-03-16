@@ -240,6 +240,10 @@ class MainWindow(QtWidgets.QMainWindow):
     #   BUILD USER INTERFACE
     # --------------------------------------------------------
     def _build_ui(self):
+
+        self.colors = ["yellow", "cyan", "magenta", "green", "red",
+                        "blue", "orange", "purple", "lime", "pink"]
+
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
 
@@ -288,57 +292,94 @@ class MainWindow(QtWidgets.QMainWindow):
         setup_group.setLayout(setup_layout)
         left.addWidget(setup_group)
 
+
         # ---------------- PLOTTING GROUP ----------------
         plot_group = QtWidgets.QGroupBox("Plotting")
-        plot_layout = QtWidgets.QFormLayout()
+        plot_layout = QtWidgets.QVBoxLayout()
+
+        # =====================================================
+        #   WINDOW SIZE CONTROL (must exist!)
+        # =====================================================
+        window_row = QtWidgets.QHBoxLayout()
+        window_row.addWidget(QtWidgets.QLabel("Window (sec):"))
 
         self.window_box = QtWidgets.QSpinBox()
         self.window_box.setRange(1, 120)
         self.window_box.setValue(10)
-        plot_layout.addRow("Window (sec):", self.window_box)
+        self.window_box.setFixedWidth(80)
+        window_row.addWidget(self.window_box)
 
+        window_row.addStretch()
+        plot_layout.addLayout(window_row)
+
+
+        # =====================================================
+        #   HEADER ROW (perfect alignment)
+        # =====================================================
+        header = QtWidgets.QHBoxLayout()
+
+        # Space for color + checkbox
+        header.addSpacing(50)
+
+        name_header = QtWidgets.QLabel("Name")
+        name_header.setMinimumWidth(200)
+        header.addWidget(name_header)
+
+        scale_header = QtWidgets.QLabel("Scale")
+        scale_header.setFixedWidth(80)
+        header.addWidget(scale_header)
+
+        offset_header = QtWidgets.QLabel("Offset")
+        offset_header.setFixedWidth(80)
+        header.addWidget(offset_header)
+
+        header.addStretch()
+        plot_layout.addLayout(header)
+
+        # =====================================================
+        #   CHANNEL ROWS (aligned with header)
+        # =====================================================
         self.channel_checkboxes = []
         self.channel_names = []
         self.channel_scales = []
         self.channel_offsets = []
         self.channel_color_labels = []
 
-        self.colors = [
-            "yellow", "cyan", "magenta", "green", "red",
-            "blue", "orange", "purple", "lime", "pink"
-        ]
-
-        def make_color_label(color):
-            lbl = QtWidgets.QLabel()
-            lbl.setFixedSize(16, 16)
-            lbl.setStyleSheet(f"background-color: {color}; border: 1px solid black;")
-            return lbl
-
         for i in range(MAX_CHANNELS):
             row = QtWidgets.QHBoxLayout()
 
-            color_label = make_color_label(self.colors[i])
+            # Color indicator
+            color_label = QtWidgets.QLabel()
+            color_label.setFixedSize(16, 16)
+            color_label.setStyleSheet(f"background-color: {self.colors[i]}; border: 1px solid black;")
             self.channel_color_labels.append(color_label)
             row.addWidget(color_label)
 
-            cb = QtWidgets.QCheckBox(f"CH{i+1}")
+            # Checkbox
+            cb = QtWidgets.QCheckBox("")
             cb.setChecked(True)
             row.addWidget(cb)
 
+            # Name field (aligned under Name header)
             name_edit = QtWidgets.QLineEdit(f"CH{i+1}")
-            name_edit.setFixedWidth(100)
+            name_edit.setMinimumWidth(200)
+            name_edit.setMaximumWidth(500)
             row.addWidget(name_edit)
 
+            # Scale (aligned under Scale header)
             scale = QtWidgets.QDoubleSpinBox()
             scale.setRange(-1e6, 1e6)
             scale.setValue(1.0)
-            scale.setDecimals(4)
+            scale.setDecimals(1)
+            scale.setFixedWidth(80)
             row.addWidget(scale)
 
+            # Offset (aligned under Offset header)
             offset = QtWidgets.QDoubleSpinBox()
             offset.setRange(-1e6, 1e6)
             offset.setValue(0.0)
-            offset.setDecimals(4)
+            offset.setDecimals(1)
+            offset.setFixedWidth(80)
             row.addWidget(offset)
 
             self.channel_checkboxes.append(cb)
@@ -346,10 +387,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.channel_scales.append(scale)
             self.channel_offsets.append(offset)
 
-            plot_layout.addRow(row)
+            plot_layout.addLayout(row)
 
         plot_group.setLayout(plot_layout)
         left.addWidget(plot_group)
+
+
 
         # =====================================================
         #   DATA SAVING (Aligned Layout)
