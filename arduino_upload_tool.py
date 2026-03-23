@@ -5,6 +5,8 @@ import zipfile
 import subprocess
 import tempfile
 import json
+import urllib.request
+import ssl
 
 import requests
 import certifi
@@ -288,6 +290,8 @@ def robust_download(url, dest, progress_callback, log_callback, max_retries=5):
     raise Exception("Download failed after multiple retries.")
 
 
+
+
 # ---------------------------------------------------------
 # INSTALLER THREAD
 # ---------------------------------------------------------
@@ -313,7 +317,7 @@ class InstallerThread(QThread):
             return
 
         # Step 2: Unzip
-        self.progress.emit("Unzipping…", 50)
+        self.progress.emit("Unzipping…", 30)
         self.log.emit("Unzipping archive…")
         os.makedirs(INSTALL_DIR, exist_ok=True)
         try:
@@ -328,26 +332,112 @@ class InstallerThread(QThread):
             return
 
         # Step 3: Install
-        self.progress.emit("Installing…", 75)
+        self.progress.emit("Installing…", 45)
         self.log.emit("Installation step complete.")
 
         # Step 4: Update PATH
-        self.progress.emit("Updating PATH…", 90)
+        self.progress.emit("Updating PATH…", 50)
         self.log.emit("Updating PATH environment variable…")
         self.update_path(INSTALL_DIR)
 
         # Step 5: Test installation
-        self.progress.emit("Testing Arduino CLI…", 95)
+        self.progress.emit("Testing Arduino CLI…", 55)
         self.log.emit("Starting post-installation tests…")
         ok, message = self.test_installation()
         self.log.emit(message)
 
         if ok:
-            self.progress.emit("Installation successful!", 100)
+            self.progress.emit("Installation successful!", 60)
         else:
             self.progress.emit("Installation completed with issues.", 100)
 
         self.test_result.emit(ok, message)
+
+        self.log.emit("Starting Downloads of WinLibs")
+        self.get_winlibs()
+
+
+    def get_winlibs(self):
+        self.progress.emit("Preparing WinLibs installation…", 60)
+        self.log.emit("Starting WinLibs installation…")
+
+        try:
+            self.progress.emit("Fetching WinLibs release info…", 62)
+            self.log.emit("Fetching latest WinLibs release info…")
+
+            api_url = "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases/latest"
+
+            try:
+                r = requests.get(api_url, headers={"User-Agent": "Mozilla/5.0"},
+                                 verify=certifi.where(), timeout=10)
+            except requests.exceptions.SSLError:
+                self.log.emit("SSL verification failed — retrying without verification…")
+                r = requests.get(api_url, headers={"User-Agent": "Mozilla/5.0"},
+                                 verify=False, timeout=10)
+
+            if r.status_code != 200:
+                raise Exception(f"GitHub API returned {r.status_code}")
+
+            release = r.json()
+
+            # Find UCRT64 asset
+            asset_url = None
+            for asset in release.get("assets", []):
+                name = asset["name"].lower()
+                if "ucrt" in name and name.endswith(".zip"):
+                    asset_url = asset["browser_download_url"]
+                    break
+
+            if not asset_url:
+                self.log.emit("Could not find UCRT64 asset in latest release.")
+                return
+
+            self.log.emit(f"Found WinLibs package:\n{asset_url}")
+            self.progress.emit("Downloading WinLibs…", 65)
+
+            # Download ZIP
+            zip_path = os.path.join(tempfile.gettempdir(), "winlibs.zip")
+
+            robust_download(
+                url=asset_url,
+                dest=zip_path,
+                progress_callback=lambda msg, pct: self.progress.emit(msg, 65 + int(pct * 0.2)),
+                log_callback=self.log.emit,
+                max_retries=5
+            )
+
+            self.progress.emit("Extracting WinLibs…", 85)
+            self.log.emit("Download complete. Extracting…")
+
+            extract_dir = os.path.abspath("winlibs")
+            os.makedirs(extract_dir, exist_ok=True)
+
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            os.remove(zip_path)
+
+            # Locate /bin folder
+            bin_path = None
+            for root, dirs, files in os.walk(extract_dir):
+                if root.lower().endswith("bin"):
+                    bin_path = root
+                    break
+
+            if bin_path:
+                os.environ["PATH"] += os.pathsep + bin_path
+                self.log.emit(f"Added to PATH:\n{bin_path}")
+            else:
+                self.log.emit("Could not locate bin folder!")
+
+            self.progress.emit("WinLibs installation complete!", 100)
+            self.log.emit("WinLibs installation complete.")
+
+        except Exception as e:
+            self.log.emit(f"Error: {e}")
+            self.progress.emit("WinLibs installation failed.", 100)
+
+    
 
     def update_path(self, path):
         current_path = os.environ.get("PATH", "")
