@@ -349,95 +349,121 @@ class InstallerThread(QThread):
         if ok:
             self.progress.emit("Installation successful!", 60)
         else:
-            self.progress.emit("Installation completed with issues.", 100)
+            self.progress.emit("Installation completed with issues.", 60)
 
         self.test_result.emit(ok, message)
 
         self.log.emit("Starting Downloads of WinLibs")
-        self.get_winlibs()
+        self.get_sw()
 
 
-    def get_winlibs(self):
-        self.progress.emit("Preparing WinLibs installation…", 60)
-        self.log.emit("Starting WinLibs installation…")
 
+
+    def get_sw(self):
         try:
-            self.progress.emit("Fetching WinLibs release info…", 62)
-            self.log.emit("Fetching latest WinLibs release info…")
-
+            self.log.emit("Fetching latest WinLibs release info...")
+    
+            # Ignore SSL certificate if needed
+            ssl._create_default_https_context = ssl._create_unverified_context
+    
             api_url = "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases/latest"
-
-            try:
-                r = requests.get(api_url, headers={"User-Agent": "Mozilla/5.0"},
-                                 verify=certifi.where(), timeout=10)
-            except requests.exceptions.SSLError:
-                self.log.emit("SSL verification failed — retrying without verification…")
-                r = requests.get(api_url, headers={"User-Agent": "Mozilla/5.0"},
-                                 verify=False, timeout=10)
-
-            if r.status_code != 200:
-                raise Exception(f"GitHub API returned {r.status_code}")
-
-            release = r.json()
-
+            req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+            data = urllib.request.urlopen(req).read()
+            release = json.loads(data)
+    
             # Find UCRT64 asset
             asset_url = None
-            for asset in release.get("assets", []):
+            for asset in release["assets"]:
                 name = asset["name"].lower()
                 if "ucrt" in name and name.endswith(".zip"):
                     asset_url = asset["browser_download_url"]
                     break
-
+                
             if not asset_url:
                 self.log.emit("Could not find UCRT64 asset in latest release.")
                 return
-
-            self.log.emit(f"Found WinLibs package:\n{asset_url}")
-            self.progress.emit("Downloading WinLibs…", 65)
-
-            # Download ZIP
-            zip_path = os.path.join(tempfile.gettempdir(), "winlibs.zip")
-
-            robust_download(
-                url=asset_url,
-                dest=zip_path,
-                progress_callback=lambda msg, pct: self.progress.emit(msg, 65 + int(pct * 0.2)),
-                log_callback=self.log.emit,
-                max_retries=5
-            )
-
-            self.progress.emit("Extracting WinLibs…", 85)
+    
+            self.log.emit(f"Downloading:\n{asset_url}")
+            zip_path = "winlibs.zip"
+    
+            # Smooth progress download (60 → 90)
+            self.progress.emit("Downloading WinLibs…", 60)
+            ok = self.download_with_progress(asset_url, zip_path, 60, 90)
+            if not ok:
+                self.log.emit("Failed to download WinLibs.")
+                return
+    
             self.log.emit("Download complete. Extracting…")
-
+            self.progress.emit("Extracting WinLibs…", 90)
+    
             extract_dir = os.path.abspath("winlibs")
             os.makedirs(extract_dir, exist_ok=True)
-
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+    
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
-
+    
             os.remove(zip_path)
-
-            # Locate /bin folder
+    
+            # Find /bin folder
             bin_path = None
             for root, dirs, files in os.walk(extract_dir):
-                if root.lower().endswith("bin"):
+                if root.endswith("bin"):
                     bin_path = root
                     break
-
+                
             if bin_path:
                 os.environ["PATH"] += os.pathsep + bin_path
                 self.log.emit(f"Added to PATH:\n{bin_path}")
+    
+                # Rename mingw32-make.exe → make.exe
+                make_src = os.path.join(bin_path, "mingw32-make.exe")
+                make_dst = os.path.join(bin_path, "make.exe")
+    
+                if os.path.exists(make_src):
+                    try:
+                        if os.path.exists(make_dst):
+                            os.remove(make_dst)
+                        os.rename(make_src, make_dst)
+                        self.log.emit("Renamed mingw32-make.exe → make.exe")
+                    except Exception as e:
+                        self.log.emit(f"Failed to rename mingw32-make.exe: {e}")
+                else:
+                    self.log.emit("mingw32-make.exe not found — cannot rename.")
             else:
                 self.log.emit("Could not locate bin folder!")
-
+    
             self.progress.emit("WinLibs installation complete!", 100)
             self.log.emit("WinLibs installation complete.")
-
+    
         except Exception as e:
             self.log.emit(f"Error: {e}")
-            self.progress.emit("WinLibs installation failed.", 100)
 
-    
+
+
+    def download_with_progress(self, url, dest, start_pct=60, end_pct=90):
+        try:
+            with urllib.request.urlopen(url) as response:
+                total = int(response.headers.get("Content-Length", 0))
+                downloaded = 0
+
+                chunk_size = 1024 * 256  # 256 KB
+                with open(dest, "wb") as f:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        if total > 0:
+                            pct = start_pct + int((downloaded / total) * (end_pct - start_pct))
+                            self.progress.emit("Downloading WinLibs…", pct)
+
+            return True
+        except Exception as e:
+            self.log.emit(f"WinLibs download error: {e}")
+            return False
+
 
     def update_path(self, path):
         current_path = os.environ.get("PATH", "")
