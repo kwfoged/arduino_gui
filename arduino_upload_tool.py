@@ -7,6 +7,7 @@ import tempfile
 import json
 import urllib.request
 import ssl
+import shutil
 
 import requests
 import certifi
@@ -15,8 +16,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout,
     QDialog, QLabel, QProgressBar, QTextEdit, QHBoxLayout,
     QMessageBox, QComboBox, QFileDialog, QListWidget, QListWidgetItem,
-    QInputDialog, QRadioButton, QButtonGroup, QFrame, QSpacerItem,
-    QSizePolicy
+    QRadioButton, QButtonGroup, QFrame, QSpacerItem,
+    QSizePolicy, QLineEdit
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
@@ -245,7 +246,6 @@ class EditorSelectionDialog(QDialog):
 
         super().accept()
 
-
 # ---------------------------------------------------------
 # ROBUST DOWNLOAD FUNCTION
 # ---------------------------------------------------------
@@ -290,8 +290,6 @@ def robust_download(url, dest, progress_callback, log_callback, max_retries=5):
     raise Exception("Download failed after multiple retries.")
 
 
-
-
 # ---------------------------------------------------------
 # INSTALLER THREAD
 # ---------------------------------------------------------
@@ -301,7 +299,7 @@ class InstallerThread(QThread):
     test_result = pyqtSignal(bool, str)
 
     def run(self):
-        # Step 1: Download
+        # Step 1: Download Arduino CLI
         try:
             robust_download(
                 ARDUINO_CLI_URL,
@@ -349,104 +347,34 @@ class InstallerThread(QThread):
         if ok:
             self.progress.emit("Installation successful!", 60)
         else:
-            self.progress.emit("Installation completed with issues.", 60)
+            self.progress.emit("Installation completed with issues.", 100)
 
         self.test_result.emit(ok, message)
 
+        # Step 6: Install WinLibs (MinGW)
         self.log.emit("Starting Downloads of WinLibs")
         self.get_sw()
 
-
-
-
-    def get_sw(self):
-        try:
-            self.log.emit("Fetching latest WinLibs release info...")
-    
-            # Ignore SSL certificate if needed
-            ssl._create_default_https_context = ssl._create_unverified_context
-    
-            api_url = "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases/latest"
-            req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-            data = urllib.request.urlopen(req).read()
-            release = json.loads(data)
-    
-            # Find UCRT64 asset
-            asset_url = None
-            for asset in release["assets"]:
-                name = asset["name"].lower()
-                if "ucrt" in name and name.endswith(".zip"):
-                    asset_url = asset["browser_download_url"]
-                    break
-                
-            if not asset_url:
-                self.log.emit("Could not find UCRT64 asset in latest release.")
-                return
-    
-            self.log.emit(f"Downloading:\n{asset_url}")
-            zip_path = "winlibs.zip"
-    
-            # Smooth progress download (60 → 90)
-            self.progress.emit("Downloading WinLibs…", 60)
-            ok = self.download_with_progress(asset_url, zip_path, 60, 90)
-            if not ok:
-                self.log.emit("Failed to download WinLibs.")
-                return
-    
-            self.log.emit("Download complete. Extracting…")
-            self.progress.emit("Extracting WinLibs…", 90)
-    
-            extract_dir = os.path.abspath("winlibs")
-            os.makedirs(extract_dir, exist_ok=True)
-    
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-    
-            os.remove(zip_path)
-    
-            # Find /bin folder
-            bin_path = None
-            for root, dirs, files in os.walk(extract_dir):
-                if root.endswith("bin"):
-                    bin_path = root
-                    break
-                
-            if bin_path:
-                os.environ["PATH"] += os.pathsep + bin_path
-                self.log.emit(f"Added to PATH:\n{bin_path}")
-    
-                # Rename mingw32-make.exe → make.exe
-                make_src = os.path.join(bin_path, "mingw32-make.exe")
-                make_dst = os.path.join(bin_path, "make.exe")
-    
-                if os.path.exists(make_src):
-                    try:
-                        if os.path.exists(make_dst):
-                            os.remove(make_dst)
-                        os.rename(make_src, make_dst)
-                        self.log.emit("Renamed mingw32-make.exe → make.exe")
-                    except Exception as e:
-                        self.log.emit(f"Failed to rename mingw32-make.exe: {e}")
-                else:
-                    self.log.emit("mingw32-make.exe not found — cannot rename.")
-            else:
-                self.log.emit("Could not locate bin folder!")
-    
-            self.progress.emit("WinLibs installation complete!", 100)
-            self.log.emit("WinLibs installation complete.")
-    
-        except Exception as e:
-            self.log.emit(f"Error: {e}")
-
-
-
+    # -----------------------------------------------------
+    # WinLibs Download Helper
+    # -----------------------------------------------------
     def download_with_progress(self, url, dest, start_pct=60, end_pct=90):
         try:
-            with urllib.request.urlopen(url) as response:
+            if os.path.exists(dest):
+                try:
+                    os.remove(dest)
+                    self.log.emit("Removed old winlibs.zip")
+                except Exception as e:
+                    self.log.emit(f"Could not remove old winlibs.zip: {e}")
+
+            self.progress.emit("Starting WinLibs download…", start_pct)
+
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as response:
                 total = int(response.headers.get("Content-Length", 0))
                 downloaded = 0
 
-                chunk_size = 1024 * 256  # 256 KB
+                chunk_size = 1024 * 256
                 with open(dest, "wb") as f:
                     while True:
                         chunk = response.read(chunk_size)
@@ -464,7 +392,88 @@ class InstallerThread(QThread):
             self.log.emit(f"WinLibs download error: {e}")
             return False
 
+    # -----------------------------------------------------
+    # WinLibs Installer
+    # -----------------------------------------------------
+    def get_sw(self):
+        try:
+            self.log.emit("Fetching latest WinLibs release info...")
 
+            ssl._create_default_https_context = ssl._create_unverified_context
+
+            api_url = "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases/latest"
+            req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+            data = urllib.request.urlopen(req).read()
+            release = json.loads(data)
+
+            # Find UCRT64 asset
+            asset_url = None
+            for asset in release["assets"]:
+                name = asset["name"].lower()
+                if "ucrt" in name and name.endswith(".zip"):
+                    asset_url = asset["browser_download_url"]
+                    break
+
+            if not asset_url:
+                self.log.emit("Could not find UCRT64 asset in latest release.")
+                return
+
+            self.log.emit(f"Downloading:\n{asset_url}")
+            zip_path = "winlibs.zip"
+
+            ok = self.download_with_progress(asset_url, zip_path, 60, 90)
+            if not ok:
+                self.log.emit("Failed to download WinLibs.")
+                return
+
+            self.log.emit("Download complete. Extracting…")
+            self.progress.emit("Extracting WinLibs…", 90)
+
+            extract_dir = os.path.abspath("winlibs")
+            os.makedirs(extract_dir, exist_ok=True)
+
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            os.remove(zip_path)
+
+            # Find /bin folder
+            bin_path = None
+            for root, dirs, files in os.walk(extract_dir):
+                if root.endswith("bin"):
+                    bin_path = root
+                    break
+
+            if bin_path:
+                os.environ["PATH"] += os.pathsep + bin_path
+                self.log.emit(f"Added to PATH:\n{bin_path}")
+
+                # Rename mingw32-make.exe → make.exe
+                make_src = os.path.join(bin_path, "mingw32-make.exe")
+                make_dst = os.path.join(bin_path, "make.exe")
+
+                if os.path.exists(make_src):
+                    try:
+                        if os.path.exists(make_dst):
+                            os.remove(make_dst)
+                        os.rename(make_src, make_dst)
+                        self.log.emit("Renamed mingw32-make.exe → make.exe")
+                    except Exception as e:
+                        self.log.emit(f"Failed to rename mingw32-make.exe: {e}")
+                else:
+                    self.log.emit("mingw32-make.exe not found — cannot rename.")
+            else:
+                self.log.emit("Could not locate bin folder!")
+
+            self.progress.emit("WinLibs installation complete!", 100)
+            self.log.emit("WinLibs installation complete.")
+
+        except Exception as e:
+            self.log.emit(f"Error: {e}")
+
+    # -----------------------------------------------------
+    # PATH Update
+    # -----------------------------------------------------
     def update_path(self, path):
         current_path = os.environ.get("PATH", "")
         if path not in current_path:
@@ -473,6 +482,9 @@ class InstallerThread(QThread):
         else:
             self.log.emit(f"{path} already in PATH.")
 
+    # -----------------------------------------------------
+    # Arduino CLI Test
+    # -----------------------------------------------------
     def test_installation(self):
         cli_path = os.path.join(INSTALL_DIR, CLI_NAME)
 
@@ -500,8 +512,8 @@ class InstallerThread(QThread):
                 capture_output=True,
                 text=True
             )
-            self.log.emit("stdout:\n" + result.stdout)
-            self.log.emit("stderr:\n" + result.stderr)
+            self.log_emit("stdout:\n" + result.stdout)
+            self.log_emit("stderr:\n" + result.stderr)
             if result.returncode != 0:
                 return False, "core update-index failed."
         except Exception as e:
@@ -579,6 +591,103 @@ class WizardDialog(QDialog):
         self.details.setVisible(visible)
         self.toggle_details_btn.setText("Hide details" if visible else "Show details")
 
+# ---------------------------------------------------------
+# SIMULATOR THREAD (Solution B: explicit make path)
+# ---------------------------------------------------------
+class SimulatorThread(QThread):
+    output = pyqtSignal(str)
+
+    def __init__(self, project_path, sim_seconds):
+        super().__init__()
+        self.project_path = project_path
+        self.sim_seconds = sim_seconds
+
+    def find_winlibs_make(self):
+        # 1. Try system PATH
+        make_path = shutil.which("make")
+        if make_path:
+            return make_path
+
+        # 2. Try local winlibs folder
+        base = os.path.abspath("winlibs")
+        for root, dirs, files in os.walk(base):
+            if "make.exe" in files:
+                return os.path.join(root, "make.exe")
+
+        return None
+
+
+    def run(self):
+        # Resolve make path explicitly
+        make_path = self.find_winlibs_make()
+        if not make_path:
+            self.output.emit(
+                "'make' not found in PATH.\n"
+                "WinLibs may not be installed or PATH not updated.\n"
+            )
+            return
+
+        self.output.emit(f"Using make at: {make_path}\n")
+        self.output.emit("Building simulator (make)...\n")
+
+        try:
+            proc = subprocess.Popen(
+                [make_path],
+                cwd=self.project_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+        except Exception as e:
+            self.output.emit(f"Error starting make: {e}\n")
+            return
+
+        for line in proc.stdout:
+            self.output.emit(line)
+        proc.wait()
+
+        if proc.returncode != 0:
+            self.output.emit("\nBuild failed.\n")
+            return
+
+        exe = os.path.join(self.project_path, "sim.exe")
+        if not os.path.exists(exe):
+            self.output.emit("sim.exe not found after build.\n")
+            return
+
+        self.output.emit(f"\nRunning simulator for {self.sim_seconds} seconds...\n")
+
+        start_time = time.time()
+
+        try:
+            proc = subprocess.Popen(
+                [exe],
+                cwd=self.project_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+        except Exception as e:
+            self.output.emit(f"Error starting simulator: {e}\n")
+            return
+
+        # Stream output until time limit reached
+        while True:
+            if proc.poll() is not None:
+                break
+
+            line = proc.stdout.readline()
+            if line:
+                self.output.emit(line)
+
+            if time.time() - start_time >= self.sim_seconds:
+                proc.terminate()
+                self.output.emit("\nSimulation time limit reached.\n")
+                break
+
+        proc.wait()
+        self.output.emit(f"\nSimulator exited with code {proc.returncode}\n")
+
 
 # ---------------------------------------------------------
 # MAIN WINDOW
@@ -590,6 +699,7 @@ class MainWindow(QWidget):
 
         self.current_project_path = None
         self.cli_version = "Unknown"
+        self.sim_thread = None
 
         # ---------- TOP: CLI STATUS + INSTALL BUTTON ----------
         self.status_label = QLabel("Arduino CLI Status: Checking…")
@@ -640,9 +750,17 @@ class MainWindow(QWidget):
         board_port_row.addWidget(self.port_label)
         board_port_row.addWidget(self.port_combo)
 
-        # ---------- UPLOAD BUTTON ----------
+        # ---------- UPLOAD + SIMULATOR BUTTONS ----------
         self.upload_btn = QPushButton("Upload to Board")
         self.upload_btn.clicked.connect(self.upload_to_board)
+
+        self.run_sim_btn = QPushButton("Run Simulator")
+        self.run_sim_btn.clicked.connect(self.run_simulator)
+
+        # Sim time input
+        self.sim_time_label = QLabel("Sim Time (sec):")
+        self.sim_time_edit = QLineEdit("10")
+        self.sim_time_edit.setFixedWidth(60)
 
         # ---------- TERMINAL ----------
         self.terminal = QTextEdit()
@@ -657,7 +775,15 @@ class MainWindow(QWidget):
         layout.addWidget(QLabel("Recent Projects:"))
         layout.addWidget(self.recent_list)
         layout.addLayout(board_port_row)
-        layout.addWidget(self.upload_btn)
+
+        upload_row = QHBoxLayout()
+        upload_row.addWidget(self.upload_btn)
+        upload_row.addWidget(self.sim_time_label)
+        upload_row.addWidget(self.sim_time_edit)
+        upload_row.addWidget(self.run_sim_btn)
+        upload_row.addStretch()
+        layout.addLayout(upload_row)
+
         layout.addWidget(QLabel("Terminal Output:"))
         layout.addWidget(self.terminal)
 
@@ -669,19 +795,29 @@ class MainWindow(QWidget):
         self.populate_boards()
         self.refresh_recent_list()
 
-    # ---------- HELPERS ----------
+    # ---------------------------------------------------------
+    # TERMINAL LOGGING
+    # ---------------------------------------------------------
     def log_terminal(self, text):
         self.terminal.append(text)
         self.terminal.moveCursor(self.terminal.textCursor().End)
 
+    # ---------------------------------------------------------
+    # INSTALLER WIZARD
+    # ---------------------------------------------------------
     def open_wizard(self):
         dialog = WizardDialog(self)
         dialog.exec_()
 
+    # ---------------------------------------------------------
+    # CLI PATH
+    # ---------------------------------------------------------
     def cli_path(self):
         return os.path.join(INSTALL_DIR, CLI_NAME)
 
-    # ---------- CLI STATUS ----------
+    # ---------------------------------------------------------
+    # CLI STATUS CHECK
+    # ---------------------------------------------------------
     def check_cli_installed(self):
         cli_path = self.cli_path()
 
@@ -704,7 +840,9 @@ class MainWindow(QWidget):
             self.log_terminal(f"Error checking CLI: {e}")
             return False
 
-    # ---------- PORTS ----------
+    # ---------------------------------------------------------
+    # PORTS
+    # ---------------------------------------------------------
     def populate_ports(self):
         self.port_combo.clear()
         ports = list_ports.comports()
@@ -713,7 +851,9 @@ class MainWindow(QWidget):
         if self.port_combo.count() == 0:
             self.port_combo.addItem("No ports detected", "")
 
-    # ---------- BOARDS ----------
+    # ---------------------------------------------------------
+    # BOARDS
+    # ---------------------------------------------------------
     def populate_boards(self):
         self.board_combo.clear()
         cli_ok = self.check_cli_installed()
@@ -763,7 +903,9 @@ class MainWindow(QWidget):
         for name, fqbn in boards:
             self.board_combo.addItem(f"{name} ({fqbn})", fqbn)
 
-    # ---------- RECENT PROJECTS ----------
+    # ---------------------------------------------------------
+    # RECENT PROJECTS
+    # ---------------------------------------------------------
     def load_recent_projects(self):
         if not os.path.exists(RECENT_FILE):
             return []
@@ -800,7 +942,9 @@ class MainWindow(QWidget):
         folder = item.data(Qt.UserRole)
         self.open_project_folder(folder)
 
-    # ---------- PROJECT MANAGEMENT ----------
+    # ---------------------------------------------------------
+    # PROJECT CREATION
+    # ---------------------------------------------------------
     def create_new_project(self):
         choice = QMessageBox.question(
             self,
@@ -815,49 +959,200 @@ class MainWindow(QWidget):
         if not folder:
             return
 
-        project_name = os.path.basename(folder.rstrip("/\\"))
-        if not project_name:
-            project_name = "ArduinoProject"
+        project_name = os.path.basename(folder.rstrip("/\\")) or "ArduinoProject"
 
         ino_path = os.path.join(folder, project_name + ".ino")
+        main_cpp_path = os.path.join(folder, "main.cpp")
+        main_h_path = os.path.join(folder, "main.h")
+        sim_dir = os.path.join(folder, "sim")
+        sim_h_path = os.path.join(sim_dir, "sim_arduino.h")
+        sim_cpp_path = os.path.join(sim_dir, "sim_arduino.cpp")
+        makefile_path = os.path.join(folder, "Makefile")
 
+        os.makedirs(sim_dir, exist_ok=True)
+
+        # -------------------------
+        # main.h
+        # -------------------------
+        main_h = """#pragma once
+
+void sim_setup();
+void sim_loop();
+"""
+
+        # -------------------------
+        # main.cpp
+        # -------------------------
         if example:
-            sketch = """\
-void setup() {
-    Serial.begin(9600);
-    pinMode(LED_BUILTIN, OUTPUT);
-    delay(500);
+            main_cpp = r"""#include "main.h"
+
+#ifdef SIMULATION
+#include "sim/sim_arduino.h"
+#else
+#include <Arduino.h>
+#endif
+
+void sim_setup() {
     Serial.println("Sending float values...");
 }
 
-void loop() {
-    float a = 1.23;
-    float b = 4.56;
-    float c = 7.89;
+void sim_loop() {
+    float a = 1.23f;
+    float b = 4.56f;
+    float c = 7.89f;
 
-    Serial.print(a, 3);
+    Serial.print(a);
     Serial.print(", ");
-    Serial.print(b, 3);
+    Serial.print(b);
     Serial.print(", ");
-    Serial.println(c, 3);
+    Serial.println(c);
 
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(LED_BUILTIN, 1);
     delay(500);
-    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(LED_BUILTIN, 0);
     delay(500);
 }
+
+#ifdef SIMULATION
+int main() {
+    sim_setup();
+    for (int i = 0; i < 10; ++i) {
+        sim_loop();
+    }
+    return 0;
+}
+#endif
+"""
+            ino = f"""#include "main.h"
+
+void setup() {{
+    sim_setup();
+}}
+
+void loop() {{
+    sim_loop();
+}}
 """
         else:
-            sketch = "void setup() {}\n\nvoid loop() {}\n"
+            main_cpp = r"""#include "main.h"
 
+#ifdef SIMULATION
+#include "sim/sim_arduino.h"
+#else
+#include <Arduino.h>
+#endif
+
+void sim_setup() {
+    // TODO: add setup simulation / Arduino code
+}
+
+void sim_loop() {
+    // TODO: add loop simulation / Arduino code
+}
+
+#ifdef SIMULATION
+int main() {
+    sim_setup();
+    while (true) {
+        sim_loop();
+    }
+    return 0;
+}
+#endif
+"""
+            ino = f"""#include "main.h"
+
+void setup() {{
+    sim_setup();
+}}
+
+void loop() {{
+    sim_loop();
+}}
+"""
+
+        # -------------------------
+        # sim_arduino.h
+        # -------------------------
+        sim_h = """#pragma once
+#include <iostream>
+#include <chrono>
+#include <thread>
+
+void delay(unsigned long ms);
+void digitalWrite(int pin, int value);
+
+struct SerialSim {
+    template<typename T>
+    void print(const T& v) { std::cout << v; }
+    template<typename T>
+    void println(const T& v) { std::cout << v << std::endl; }
+    void println() { std::cout << std::endl; }
+};
+
+extern SerialSim Serial;
+
+#define LED_BUILTIN 13
+"""
+
+        # -------------------------
+        # sim_arduino.cpp
+        # -------------------------
+        sim_cpp = """#include "sim_arduino.h"
+
+SerialSim Serial;
+
+void delay(unsigned long ms) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+void digitalWrite(int pin, int value) {
+    std::cout << "[digitalWrite] pin " << pin << " = " << value << std::endl;
+}
+"""
+
+        # -------------------------
+        # Makefile (Option B — safest)
+        # -------------------------
+        makefile = (
+        "CXX = g++\n"
+        "CXXFLAGS = -std=c++17 -O2 -DSIMULATION\n"
+        "TARGET = sim.exe\n\n"
+        "SRC = main.cpp sim/sim_arduino.cpp\n\n"
+        "all: $(TARGET)\n\n"
+        "$(TARGET): $(SRC)\n"
+        "\t$(CXX) $(CXXFLAGS) -o $(TARGET) $(SRC)\n\n"
+        "clean:\n"
+        "\t-del $(TARGET) 2> NUL\n"
+        )
+
+
+        # -------------------------
+        # Write all files
+        # -------------------------
         try:
+            with open(main_h_path, "w", encoding="utf-8") as f:
+                f.write(main_h)
+            with open(main_cpp_path, "w", encoding="utf-8") as f:
+                f.write(main_cpp)
             with open(ino_path, "w", encoding="utf-8") as f:
-                f.write(sketch)
+                f.write(ino)
+            with open(sim_h_path, "w", encoding="utf-8") as f:
+                f.write(sim_h)
+            with open(sim_cpp_path, "w", encoding="utf-8") as f:
+                f.write(sim_cpp)
+            with open(makefile_path, "w", encoding="utf-8") as f:
+                f.write(makefile)
+
             self.open_project_folder(folder)
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create project:\n{e}")
             self.log_terminal(f"Failed to create project: {e}")
 
+    # ---------------------------------------------------------
+    # OPEN PROJECT
+    # ---------------------------------------------------------
     def open_project(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Project Folder")
         if folder:
@@ -879,7 +1174,9 @@ void loop() {
         self.add_recent_project(folder)
         self.log_terminal(f"Opened project:\n{ino_path}")
 
-    # ---------- OPEN IN EDITOR ----------
+    # ---------------------------------------------------------
+    # OPEN PROJECT IN EDITOR
+    # ---------------------------------------------------------
     def open_project_in_editor(self):
         if not self.current_project_path:
             QMessageBox.warning(self, "No Project", "No project is currently selected.")
@@ -914,6 +1211,9 @@ void loop() {
 
             self.open_in_editor(editor_path, ino_path, editor_name)
 
+    # ---------------------------------------------------------
+    # OPEN IN EDITOR (actual launch)
+    # ---------------------------------------------------------
     def open_in_editor(self, editor_path, ino_path, editor_name="Editor"):
         try:
             subprocess.Popen([editor_path, ino_path])
@@ -922,7 +1222,9 @@ void loop() {
             QMessageBox.critical(self, "Error", f"Failed to open editor:\n{e}")
             self.log_terminal(f"Failed to open editor: {e}")
 
-    # ---------- UPLOAD ----------
+    # ---------------------------------------------------------
+    # UPLOAD TO BOARD
+    # ---------------------------------------------------------
     def upload_to_board(self):
         self.terminal.clear()
 
@@ -954,7 +1256,9 @@ void loop() {
 
         cli_path = self.cli_path()
 
+        # -------------------------
         # Compile
+        # -------------------------
         self.log_terminal(f"Compiling {ino_path} for {fqbn} in {project_dir}…")
         try:
             compile_proc = subprocess.run(
@@ -979,7 +1283,9 @@ void loop() {
             )
             return
 
+        # -------------------------
         # Upload
+        # -------------------------
         self.log_terminal(f"Uploading to {port}…")
         try:
             upload_proc = subprocess.run(
@@ -1008,6 +1314,35 @@ void loop() {
                 "Upload Successful",
                 f"Sketch uploaded to {port} successfully."
             )
+
+    # ---------------------------------------------------------
+    # RUN SIMULATOR
+    # ---------------------------------------------------------
+    def run_simulator(self):
+        if not self.current_project_path:
+            QMessageBox.warning(self, "No Project", "No project is currently selected.")
+            return
+
+        makefile_path = os.path.join(self.current_project_path, "Makefile")
+        if not os.path.exists(makefile_path):
+            QMessageBox.warning(self, "No Makefile", "No Makefile found in this project.")
+            return
+
+        # Read simulation time
+        try:
+            sim_seconds = float(self.sim_time_edit.text())
+            if sim_seconds <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Time", "Simulation time must be a positive number.")
+            return
+
+        self.log_terminal(f"Starting simulator for {sim_seconds} seconds...\n")
+
+        self.sim_thread = SimulatorThread(self.current_project_path, sim_seconds)
+        self.sim_thread.output.connect(self.log_terminal)
+        self.sim_thread.start()
+
 
 
 # ---------------------------------------------------------
