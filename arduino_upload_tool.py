@@ -35,6 +35,9 @@ DOWNLOAD_PATH = os.path.join(TEMP_DIR, "arduino-cli.zip")
 INSTALL_DIR = os.path.expanduser("~/.arduino-cli")
 CLI_NAME = "arduino-cli.exe"
 
+WINLIBS_DIR = os.path.join(os.path.expanduser("~"), ".winlibs")
+WINLIBS_ZIP = os.path.join(TEMP_DIR, "winlibs.zip")
+
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".arduino_gui_settings.json")
 MAX_RECENT = 10
 
@@ -309,7 +312,7 @@ def robust_download(url, dest, progress_callback, log_callback, max_retries=5):
 
 
 # ---------------------------------------------------------
-# INSTALLER THREAD
+# INSTALLER THREAD (UPDATED FOR ~/.winlibs)
 # ---------------------------------------------------------
 class InstallerThread(QThread):
     progress = pyqtSignal(str, int)
@@ -424,9 +427,8 @@ class InstallerThread(QThread):
                 return
 
             self.log.emit(f"Downloading:\n{asset_url}")
-            zip_path = "winlibs.zip"
 
-            ok = self.download_with_progress(asset_url, zip_path, 60, 90)
+            ok = self.download_with_progress(asset_url, WINLIBS_ZIP, 60, 90)
             if not ok:
                 self.log.emit("Failed to download WinLibs.")
                 return
@@ -434,16 +436,15 @@ class InstallerThread(QThread):
             self.log.emit("Download complete. Extracting…")
             self.progress.emit("Extracting WinLibs…", 90)
 
-            extract_dir = os.path.abspath("winlibs")
-            os.makedirs(extract_dir, exist_ok=True)
+            os.makedirs(WINLIBS_DIR, exist_ok=True)
 
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
+            with zipfile.ZipFile(WINLIBS_ZIP, 'r') as zip_ref:
+                zip_ref.extractall(WINLIBS_DIR)
 
-            os.remove(zip_path)
+            os.remove(WINLIBS_ZIP)
 
             bin_path = None
-            for root, dirs, files in os.walk(extract_dir):
+            for root, dirs, files in os.walk(WINLIBS_DIR):
                 if root.endswith("bin"):
                     bin_path = root
                     break
@@ -560,6 +561,7 @@ class WizardDialog(QDialog):
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
+        # Start installer thread
         self.thread = InstallerThread()
         self.thread.progress.connect(self.update_status)
         self.thread.log.connect(self.append_log)
@@ -569,7 +571,6 @@ class WizardDialog(QDialog):
     def update_status(self, message, value):
         self.status_label.setText(message)
         self.progress.setValue(value)
-
 
     def append_log(self, text):
         self.details.append(text)
@@ -582,6 +583,7 @@ class WizardDialog(QDialog):
         else:
             self.status_label.setText("❌ Installation completed with issues.")
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
+
         self.append_log("Test result: " + message)
         self.main_window.check_winlibs_installed()
 
@@ -592,7 +594,7 @@ class WizardDialog(QDialog):
 
 
 # ---------------------------------------------------------
-# SIMULATOR THREAD
+# SIMULATOR THREAD (UPDATED FOR ~/.winlibs)
 # ---------------------------------------------------------
 class SimulatorThread(QThread):
     output = pyqtSignal(str)
@@ -603,12 +605,13 @@ class SimulatorThread(QThread):
         self.sim_seconds = sim_seconds
 
     def find_winlibs_make(self):
+        # First try PATH
         make_path = shutil.which("make")
         if make_path:
             return make_path
 
-        base = os.path.abspath("winlibs")
-        for root, dirs, files in os.walk(base):
+        # Then try ~/.winlibs
+        for root, dirs, files in os.walk(WINLIBS_DIR):
             if "make.exe" in files:
                 return os.path.join(root, "make.exe")
 
@@ -618,7 +621,7 @@ class SimulatorThread(QThread):
         make_path = self.find_winlibs_make()
         if not make_path:
             self.output.emit(
-                "'make' not found in PATH.\n"
+                "'make' not found.\n"
                 "WinLibs may not be installed or PATH not updated.\n"
             )
             return
@@ -707,6 +710,7 @@ def make_icon_group(parent, title: str, standard_pixmap: QStyle.StandardPixmap, 
     outer.addLayout(inner_layout)
 
     return box
+
 
 # ---------------------------------------------------------
 # MAIN WINDOW
@@ -857,11 +861,26 @@ class MainWindow(QWidget):
         # -------------------------
         self.check_cli_installed()
         self.check_winlibs_installed()
-        self.ensure_winlibs_in_path()
+        self.ensure_winlibs_in_path()   # <-- IMPORTANT FIX
         self.populate_ports()
         self.populate_boards()
         self.refresh_recent_list()
         self.restore_gui_state()
+
+    # ---------------------------------------------------------
+    # ENSURE WINLIBS IS IN PATH
+    # ---------------------------------------------------------
+    def ensure_winlibs_in_path(self):
+        if not os.path.exists(WINLIBS_DIR):
+            return
+
+        for root, dirs, files in os.walk(WINLIBS_DIR):
+            if "make.exe" in files:
+                bin_path = root
+                if bin_path not in os.environ["PATH"]:
+                    os.environ["PATH"] += os.pathsep + bin_path
+                    self.log_terminal(f"WinLibs added to PATH: {bin_path}")
+                return
 
     # ---------------------------------------------------------
     # GUI STATE
@@ -963,22 +982,24 @@ class MainWindow(QWidget):
     # WINLIBS STATUS CHECK
     # ---------------------------------------------------------
     def check_winlibs_installed(self):
+        # 1. Try PATH first
         make_path = shutil.which("make")
-
+    
+        # 2. If not found, search recursively inside ~/.winlibs
         if not make_path:
-            base = os.path.abspath("winlibs")
-            for root, dirs, files in os.walk(base):
+            for root, dirs, files in os.walk(WINLIBS_DIR):
                 if "make.exe" in files:
                     make_path = os.path.join(root, "make.exe")
                     break
-
+                
+        # 3. Update GUI
         if make_path:
             self.winlibs_status_label.setText(f"WinLibs Status: ✅ Installed ({make_path})")
             self.winlibs_status_label.setStyleSheet("color: green; font-weight: bold;")
         else:
             self.winlibs_status_label.setText("WinLibs Status: ❌ Not Installed")
             self.winlibs_status_label.setStyleSheet("color: red; font-weight: bold;")
-
+    
     # ---------------------------------------------------------
     # PORTS
     # ---------------------------------------------------------
@@ -1253,7 +1274,6 @@ void digitalWrite(int pin, int value) {
             with open(makefile_path, "w", encoding="utf-8") as f:
                 f.write(makefile)
 
-            # integrate with new state + recent list
             self.current_project_path = folder
             self.current_project_label.setText(f"Current project: {folder}")
             self.add_recent_project(project_name, folder)
@@ -1273,6 +1293,7 @@ void digitalWrite(int pin, int value) {
         self.current_project_path = folder
         name = os.path.basename(folder)
         self.current_project_label.setText(f"Current project: {folder}")
+
         self.add_recent_project(name, folder)
 
     def open_recent_project(self, item, column):
@@ -1398,17 +1419,6 @@ void digitalWrite(int pin, int value) {
         self.sim_thread = SimulatorThread(self.current_project_path, sim_seconds)
         self.sim_thread.output.connect(self.log_terminal)
         self.sim_thread.start()
-
-    def ensure_winlibs_in_path(self):
-        base = os.path.abspath("winlibs")
-        for root, dirs, files in os.walk(base):
-            if "make.exe" in files:
-                bin_path = root
-                if bin_path not in os.environ["PATH"]:
-                    os.environ["PATH"] += os.pathsep + bin_path
-                    self.log_terminal(f"Added WinLibs to PATH: {bin_path}")
-                return
-
 
 
 # ---------------------------------------------------------
