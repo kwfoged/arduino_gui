@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QLineEdit, QGroupBox, QTreeWidget,
     QTreeWidgetItem, QStyle
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPoint, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPoint, QSize, QTimer
 from PyQt5.QtGui import QIcon
 
 from serial.tools import list_ports  # pip install pyserial
@@ -867,6 +867,12 @@ class MainWindow(QWidget):
         self.refresh_recent_list()
         self.restore_gui_state()
 
+        # Auto-refresh COM ports every 2 seconds
+        self.port_timer = QTimer(self)
+        self.port_timer.timeout.connect(self.populate_ports)
+        self.port_timer.start(2000)
+
+
     # ---------------------------------------------------------
     # ENSURE WINLIBS IS IN PATH
     # ---------------------------------------------------------
@@ -984,14 +990,14 @@ class MainWindow(QWidget):
     def check_winlibs_installed(self):
         # 1. Try PATH first
         make_path = shutil.which("make")
-    
+
         # 2. If not found, search recursively inside ~/.winlibs
         if not make_path:
             for root, dirs, files in os.walk(WINLIBS_DIR):
                 if "make.exe" in files:
                     make_path = os.path.join(root, "make.exe")
                     break
-                
+
         # 3. Update GUI
         if make_path:
             self.winlibs_status_label.setText(f"WinLibs Status: ✅ Installed ({make_path})")
@@ -999,7 +1005,7 @@ class MainWindow(QWidget):
         else:
             self.winlibs_status_label.setText("WinLibs Status: ❌ Not Installed")
             self.winlibs_status_label.setStyleSheet("color: red; font-weight: bold;")
-    
+
     # ---------------------------------------------------------
     # PORTS
     # ---------------------------------------------------------
@@ -1017,8 +1023,38 @@ class MainWindow(QWidget):
     # ---------------------------------------------------------
     def populate_boards(self):
         self.board_combo.clear()
-        self.board_combo.addItem("arduino:avr:uno", "arduino:avr:uno")
-        self.board_combo.addItem("arduino:avr:nano", "arduino:avr:nano")
+    
+        boards = [
+            ("Arduino Uno", "arduino:avr:uno"),
+            ("Arduino Nano", "arduino:avr:nano"),
+            ("Arduino Mega 2560", "arduino:avr:mega"),
+            ("Arduino Duemilanove", "arduino:avr:diecimila"),
+            ("Arduino Leonardo", "arduino:avr:leonardo"),
+        ]
+    
+        # Add common boards first
+        for name, fqbn in boards:
+            self.board_combo.addItem(f"{name} ({fqbn})", fqbn)
+    
+        # Optional: dynamically load ALL boards from Arduino CLI
+        cli = self.cli_path()
+        if os.path.exists(cli):
+            try:
+                result = subprocess.run(
+                    [cli, "board", "listall"],
+                    capture_output=True,
+                    text=True
+                )
+                for line in result.stdout.splitlines():
+                    if ":" in line and " " in line:
+                        parts = line.strip().split()
+                        fqbn = parts[-1]
+                        name = " ".join(parts[:-1])
+                        if fqbn not in [b[1] for b in boards]:
+                            self.board_combo.addItem(f"{name} ({fqbn})", fqbn)
+            except Exception:
+                pass
+
 
     # ---------------------------------------------------------
     # RECENT PROJECTS
@@ -1124,6 +1160,7 @@ void sim_loop();
 #endif
 
 void sim_setup() {
+    Serial.begin(115200);
     Serial.println("Sending float values...");
 }
 
@@ -1214,12 +1251,23 @@ void delay(unsigned long ms);
 void digitalWrite(int pin, int value);
 
 struct SerialSim {
+    void begin(unsigned long baud) {
+        std::cout << "[Serial.begin] baud=" << baud << std::endl;
+    }
+
     template<typename T>
     void print(const T& v) { std::cout << v; }
+
     template<typename T>
     void println(const T& v) { std::cout << v << std::endl; }
+
     void println() { std::cout << std::endl; }
+
+    void write(uint8_t b) {
+        std::cout << "[Serial.write] " << (int)b << std::endl;
+    }
 };
+
 
 extern SerialSim Serial;
 
