@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QComboBox, QFileDialog,
     QRadioButton, QButtonGroup, QFrame, QSpacerItem,
     QSizePolicy, QLineEdit, QGroupBox, QTreeWidget,
-    QTreeWidgetItem, QStyle
+    QTreeWidgetItem, QStyle, QScrollArea, QSplitter
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPoint, QSize, QTimer
 from PyQt5.QtGui import QIcon
@@ -75,7 +75,7 @@ def load_settings():
             data[key] = json.loads(json.dumps(default_value))
 
     if not isinstance(data.get("gui"), dict):
-        data["gui"] = json.loads(json.dumps(DEFAULT_SETTINGS["gui"]))
+        data["gui"] = json.loads(json.dumps(DEFAULTSETTINGS["gui"]))
     else:
         for key, default_value in DEFAULT_SETTINGS["gui"].items():
             if key not in data["gui"]:
@@ -265,7 +265,6 @@ class EditorSelectionDialog(QDialog):
         self.set_as_default = self.set_default_radio.isChecked()
 
         super().accept()
-
 
 # ---------------------------------------------------------
 # ROBUST DOWNLOAD FUNCTION
@@ -561,7 +560,6 @@ class WizardDialog(QDialog):
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
-        # Start installer thread
         self.thread = InstallerThread()
         self.thread.progress.connect(self.update_status)
         self.thread.log.connect(self.append_log)
@@ -577,11 +575,11 @@ class WizardDialog(QDialog):
 
     def handle_test_result(self, ok, message):
         if ok:
-            self.status_label.setText("✅ Installation successful!")
+            self.status_label.setText("Installation successful!")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             self.main_window.check_cli_installed()
         else:
-            self.status_label.setText("❌ Installation completed with issues.")
+            self.status_label.setText("Installation completed with issues.")
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
 
         self.append_log("Test result: " + message)
@@ -605,12 +603,10 @@ class SimulatorThread(QThread):
         self.sim_seconds = sim_seconds
 
     def find_winlibs_make(self):
-        # First try PATH
         make_path = shutil.which("make")
         if make_path:
             return make_path
 
-        # Then try ~/.winlibs
         for root, dirs, files in os.walk(WINLIBS_DIR):
             if "make.exe" in files:
                 return os.path.join(root, "make.exe")
@@ -711,7 +707,6 @@ def make_icon_group(parent, title: str, standard_pixmap: QStyle.StandardPixmap, 
 
     return box
 
-
 # ---------------------------------------------------------
 # MAIN WINDOW
 # ---------------------------------------------------------
@@ -726,42 +721,46 @@ class MainWindow(QWidget):
         self.cli_version = "Unknown"
         self.sim_thread = None
 
-        # -------------------------
         # Installed Software Status
-        # -------------------------
         self.status_label = QLabel("Arduino CLI Status: Checking…")
         self.status_label.setStyleSheet("font-weight: bold;")
 
         self.winlibs_status_label = QLabel("WinLibs Status: Checking…")
         self.winlibs_status_label.setStyleSheet("font-weight: bold;")
 
-        self.install_btn = QPushButton("Install / Update Arduino CLI")
+        self.install_btn = QPushButton("Install / Update Software")
         self.install_btn.clicked.connect(self.open_wizard)
 
-        # -------------------------
-        # Project Section
-        # -------------------------
+        # ---------------------------------------------------------
+        # PROJECT SECTION
+        # ---------------------------------------------------------
         self.create_project_btn = QPushButton("Create New Project")
         self.create_project_btn.clicked.connect(self.create_new_project)
 
-        self.select_project_btn = QPushButton("Select Project")
+        self.select_project_btn = QPushButton("Find Project")
         self.select_project_btn.clicked.connect(self.open_project)
 
         self.show_editor_btn = QPushButton("Show Project in Editor")
         self.show_editor_btn.clicked.connect(self.open_project_in_editor)
 
-        project_buttons = QHBoxLayout()
-        project_buttons.addWidget(self.create_project_btn)
-        project_buttons.addWidget(self.select_project_btn)
-        project_buttons.addWidget(self.show_editor_btn)
+        self.open_folder_btn = QPushButton("Open Project Folder")
+        self.open_folder_btn.clicked.connect(self.open_project_folder)
+
+        project_buttons_row1 = QHBoxLayout()
+        project_buttons_row1.addWidget(self.create_project_btn)
+        project_buttons_row1.addWidget(self.select_project_btn)
+
+        project_buttons_row2 = QHBoxLayout()
+        project_buttons_row2.addWidget(self.show_editor_btn)
+        project_buttons_row2.addWidget(self.open_folder_btn)
 
         self.current_project_label = QLabel("Current project: None")
-        self.current_project_label.setStyleSheet("font-style: italic;")
+        self.current_project_label.setStyleSheet("font-weight: bold;")
 
-        # Recent projects
+        # Recent Projects
         self.recent_list = QTreeWidget()
-        self.recent_list.setColumnCount(2)
-        self.recent_list.setHeaderLabels(["Project Name", "Path"])
+        self.recent_list.setColumnCount(1)
+        self.recent_list.setHeaderLabels(["Project Name"])
         self.recent_list.itemDoubleClicked.connect(self.open_recent_project)
 
         self.recent_toggle_btn = QPushButton("▼ Recent Projects")
@@ -775,103 +774,134 @@ class MainWindow(QWidget):
         recent_layout.addWidget(self.recent_list)
         self.recent_container.setLayout(recent_layout)
 
-        # -------------------------
-        # Upload Section
-        # -------------------------
+        # ---------------------------------------------------------
+        # UPLOAD SECTION
+        # ---------------------------------------------------------
+        self.upload_btn = QPushButton("Upload to Board")
+        self.upload_btn.clicked.connect(self.upload_to_board)
+
         self.board_label = QLabel("Board:")
         self.board_combo = QComboBox()
 
         self.port_label = QLabel("Port:")
         self.port_combo = QComboBox()
 
-        board_port_row = QHBoxLayout()
-        board_port_row.addWidget(self.board_label)
-        board_port_row.addWidget(self.board_combo)
-        board_port_row.addStretch()
-        board_port_row.addWidget(self.port_label)
-        board_port_row.addWidget(self.port_combo)
+        board_layout = QVBoxLayout()
+        board_layout.addWidget(self.board_label)
+        board_layout.addWidget(self.board_combo)
 
-        self.upload_btn = QPushButton("Upload to Board")
-        self.upload_btn.clicked.connect(self.upload_to_board)
+        port_layout = QVBoxLayout()
+        port_layout.addWidget(self.port_label)
+        port_layout.addWidget(self.port_combo)
 
-        # -------------------------
-        # Simulation Section
-        # -------------------------
-        self.run_sim_btn = QPushButton("Run Simulator")
+        # ---------------------------------------------------------
+        # SIMULATION SECTION
+        # ---------------------------------------------------------
+        self.run_sim_btn = QPushButton("Run Simulation")
         self.run_sim_btn.clicked.connect(self.run_simulator)
+
+        self.stop_sim_btn = QPushButton("Stop Simulation")
+        self.stop_sim_btn.clicked.connect(self.stop_simulator)
+
+        sim_buttons_row = QHBoxLayout()
+        sim_buttons_row.addWidget(self.run_sim_btn)
+        sim_buttons_row.addWidget(self.stop_sim_btn)
 
         self.sim_time_label = QLabel("Sim Time (sec):")
         self.sim_time_edit = QLineEdit(str(self.settings["gui"].get("sim_time", 10)))
         self.sim_time_edit.setFixedWidth(60)
 
-        # -------------------------
-        # Terminal Output
-        # -------------------------
+        # ---------------------------------------------------------
+        # TERMINAL OUTPUT
+        # ---------------------------------------------------------
         self.terminal = QTextEdit()
         self.terminal.setReadOnly(True)
         self.terminal.setMinimumHeight(200)
 
-        # -------------------------
-        # Group Layouts
-        # -------------------------
-        sw_layout = QVBoxLayout()
-        sw_layout.addWidget(self.status_label)
-        sw_layout.addWidget(self.winlibs_status_label)
-        sw_layout.addWidget(self.install_btn)
-        sw_group = make_icon_group(self, "Installed Software Status", QStyle.SP_ComputerIcon, sw_layout)
-
+        # ---------------------------------------------------------
+        # GROUPBOXES
+        # ---------------------------------------------------------
         project_layout = QVBoxLayout()
-        project_layout.addLayout(project_buttons)
+        project_layout.addLayout(project_buttons_row1)
+        project_layout.addLayout(project_buttons_row2)
         project_layout.addWidget(self.current_project_label)
         project_layout.addWidget(self.recent_toggle_btn)
         project_layout.addWidget(self.recent_container)
         project_group = make_icon_group(self, "Project", QStyle.SP_DirIcon, project_layout)
 
         upload_layout = QVBoxLayout()
-        upload_layout.addLayout(board_port_row)
         upload_layout.addWidget(self.upload_btn)
+        upload_layout.addLayout(board_layout)
+        upload_layout.addLayout(port_layout)
         upload_group = make_icon_group(self, "Upload Code", QStyle.SP_ArrowUp, upload_layout)
 
         sim_layout = QVBoxLayout()
+        sim_layout.addLayout(sim_buttons_row)
         sim_layout.addWidget(self.sim_time_label)
         sim_layout.addWidget(self.sim_time_edit)
-        sim_layout.addWidget(self.run_sim_btn)
         sim_group = make_icon_group(self, "Simulation", QStyle.SP_MediaPlay, sim_layout)
 
-        upload_sim_row = QHBoxLayout()
-        upload_sim_row.addWidget(upload_group)
-        upload_sim_row.addWidget(sim_group)
+        sw_layout = QVBoxLayout()
+        sw_layout.addWidget(self.install_btn)
+        sw_layout.addWidget(self.status_label)
+        sw_layout.addWidget(self.winlibs_status_label)
+        sw_group = make_icon_group(self, "Installed Software Status", QStyle.SP_ComputerIcon, sw_layout)
 
         terminal_layout = QVBoxLayout()
         terminal_layout.addWidget(self.terminal)
         terminal_group = make_icon_group(self, "Terminal Output", QStyle.SP_ComputerIcon, terminal_layout)
 
-        # -------------------------
-        # Main Layout
-        # -------------------------
-        layout = QVBoxLayout()
-        layout.addWidget(sw_group)
-        layout.addWidget(project_group)
-        layout.addLayout(upload_sim_row)
-        layout.addWidget(terminal_group)
-        self.setLayout(layout)
+        # ---------------------------------------------------------
+        # LEFT PANEL (SCROLLABLE)
+        # ---------------------------------------------------------
+        left_content = QWidget()
+        left_layout = QVBoxLayout(left_content)
+        left_layout.addWidget(project_group)
+        left_layout.addWidget(upload_group)
+        left_layout.addWidget(sim_group)
+        left_layout.addWidget(sw_group)
+        left_layout.addStretch()
 
-        # -------------------------
-        # Initialize State
-        # -------------------------
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(left_content)
+
+        # ---------------------------------------------------------
+        # RIGHT PANEL
+        # ---------------------------------------------------------
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.addWidget(terminal_group)
+
+        # ---------------------------------------------------------
+        # SPLITTER (30/70)
+        # ---------------------------------------------------------
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(scroll)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([300, 700])  # 30/70 split
+
+        # ---------------------------------------------------------
+        # MAIN LAYOUT
+        # ---------------------------------------------------------
+        main_layout = QHBoxLayout()
+        main_layout.addWidget(splitter)
+        self.setLayout(main_layout)
+
+        # ---------------------------------------------------------
+        # INITIALIZATION
+        # ---------------------------------------------------------
         self.check_cli_installed()
         self.check_winlibs_installed()
-        self.ensure_winlibs_in_path()   # <-- IMPORTANT FIX
+        self.ensure_winlibs_in_path()
         self.populate_ports()
         self.populate_boards()
         self.refresh_recent_list()
         self.restore_gui_state()
 
-        # Auto-refresh COM ports every 2 seconds
         self.port_timer = QTimer(self)
         self.port_timer.timeout.connect(self.populate_ports)
         self.port_timer.start(2000)
-
 
     # ---------------------------------------------------------
     # ENSURE WINLIBS IS IN PATH
@@ -963,7 +993,7 @@ class MainWindow(QWidget):
         cli_path = self.cli_path()
 
         if not os.path.exists(cli_path):
-            self.status_label.setText("Arduino CLI Status: ❌ Not Installed")
+            self.status_label.setText("Arduino CLI Status: Not Installed")
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
             return False
 
@@ -973,13 +1003,12 @@ class MainWindow(QWidget):
                 capture_output=True,
                 text=True
             )
-            version = result.stdout.strip()
-            self.cli_version = version
-            self.status_label.setText(f"Arduino CLI Status: ✅ Installed ({version})")
+            self.cli_version = result.stdout.strip()
+            self.status_label.setText("Arduino CLI Status: Installed")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             return True
         except Exception as e:
-            self.status_label.setText("Arduino CLI Status: ❌ Error Running CLI")
+            self.status_label.setText("Arduino CLI Status: Error")
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
             self.log_terminal(f"Error checking CLI: {e}")
             return False
@@ -988,22 +1017,19 @@ class MainWindow(QWidget):
     # WINLIBS STATUS CHECK
     # ---------------------------------------------------------
     def check_winlibs_installed(self):
-        # 1. Try PATH first
         make_path = shutil.which("make")
 
-        # 2. If not found, search recursively inside ~/.winlibs
         if not make_path:
             for root, dirs, files in os.walk(WINLIBS_DIR):
                 if "make.exe" in files:
                     make_path = os.path.join(root, "make.exe")
                     break
 
-        # 3. Update GUI
         if make_path:
-            self.winlibs_status_label.setText(f"WinLibs Status: ✅ Installed ({make_path})")
+            self.winlibs_status_label.setText("WinLibs Status: Installed")
             self.winlibs_status_label.setStyleSheet("color: green; font-weight: bold;")
         else:
-            self.winlibs_status_label.setText("WinLibs Status: ❌ Not Installed")
+            self.winlibs_status_label.setText("WinLibs Status: Not Installed")
             self.winlibs_status_label.setStyleSheet("color: red; font-weight: bold;")
 
     # ---------------------------------------------------------
@@ -1014,7 +1040,7 @@ class MainWindow(QWidget):
         try:
             ports = list_ports.comports()
             for p in ports:
-                self.port_combo.addItem(f"{p.device} ({p.description})", p.device)
+                self.port_combo.addItem(p.device, p.device)
         except Exception as e:
             self.log_terminal(f"Error listing ports: {e}")
 
@@ -1023,7 +1049,7 @@ class MainWindow(QWidget):
     # ---------------------------------------------------------
     def populate_boards(self):
         self.board_combo.clear()
-    
+
         boards = [
             ("Arduino Uno", "arduino:avr:uno"),
             ("Arduino Nano", "arduino:avr:nano"),
@@ -1031,12 +1057,10 @@ class MainWindow(QWidget):
             ("Arduino Duemilanove", "arduino:avr:diecimila"),
             ("Arduino Leonardo", "arduino:avr:leonardo"),
         ]
-    
-        # Add common boards first
+
         for name, fqbn in boards:
-            self.board_combo.addItem(f"{name} ({fqbn})", fqbn)
-    
-        # Optional: dynamically load ALL boards from Arduino CLI
+            self.board_combo.addItem(name, fqbn)
+
         cli = self.cli_path()
         if os.path.exists(cli):
             try:
@@ -1051,10 +1075,9 @@ class MainWindow(QWidget):
                         fqbn = parts[-1]
                         name = " ".join(parts[:-1])
                         if fqbn not in [b[1] for b in boards]:
-                            self.board_combo.addItem(f"{name} ({fqbn})", fqbn)
+                            self.board_combo.addItem(name, fqbn)
             except Exception:
                 pass
-
 
     # ---------------------------------------------------------
     # RECENT PROJECTS
@@ -1084,7 +1107,9 @@ class MainWindow(QWidget):
                 continue
 
             cleaned.append(entry)
-            item = QTreeWidgetItem([name, path])
+
+            item = QTreeWidgetItem([name])
+            item.setToolTip(0, path)
             self.recent_list.addTopLevelItem(item)
 
         self.settings["recent_projects"] = cleaned
@@ -1138,18 +1163,12 @@ class MainWindow(QWidget):
 
         os.makedirs(sim_dir, exist_ok=True)
 
-        # -------------------------
-        # main.h
-        # -------------------------
         main_h = """#pragma once
 
 void sim_setup();
 void sim_loop();
 """
 
-        # -------------------------
-        # main.cpp + .ino
-        # -------------------------
         if example:
             main_cpp = r"""#include "main.h"
 
@@ -1239,9 +1258,6 @@ void loop() {{
 }}
 """
 
-        # -------------------------
-        # sim_arduino.h
-        # -------------------------
         sim_h = """#pragma once
 #include <iostream>
 #include <chrono>
@@ -1274,9 +1290,6 @@ extern SerialSim Serial;
 #define LED_BUILTIN 13
 """
 
-        # -------------------------
-        # sim_arduino.cpp
-        # -------------------------
         sim_cpp = """#include "sim_arduino.h"
 
 SerialSim Serial;
@@ -1290,9 +1303,6 @@ void digitalWrite(int pin, int value) {
 }
 """
 
-        # -------------------------
-        # Makefile
-        # -------------------------
         makefile = (
             "CXX = g++\n"
             "CXXFLAGS = -std=c++17 -O2 -DSIMULATION\n"
@@ -1305,9 +1315,6 @@ void digitalWrite(int pin, int value) {
             "\t-del $(TARGET) 2> NUL\n"
         )
 
-        # -------------------------
-        # Write all files
-        # -------------------------
         try:
             with open(main_h_path, "w", encoding="utf-8") as f:
                 f.write(main_h)
@@ -1345,7 +1352,7 @@ void digitalWrite(int pin, int value) {
         self.add_recent_project(name, folder)
 
     def open_recent_project(self, item, column):
-        path = item.text(1)
+        path = item.toolTip(0)
         if not os.path.exists(path):
             QMessageBox.warning(self, "Missing project", "This project folder no longer exists.")
             self.refresh_recent_list()
@@ -1353,6 +1360,18 @@ void digitalWrite(int pin, int value) {
 
         self.current_project_path = path
         self.current_project_label.setText(f"Current project: {path}")
+
+    # ---------------------------------------------------------
+    # OPEN PROJECT FOLDER
+    # ---------------------------------------------------------
+    def open_project_folder(self):
+        if not self.current_project_path:
+            QMessageBox.warning(self, "No project", "No current project selected.")
+            return
+        try:
+            os.startfile(self.current_project_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to open folder:\n{e}")
 
     # ---------------------------------------------------------
     # EDITOR OPEN
@@ -1467,6 +1486,16 @@ void digitalWrite(int pin, int value) {
         self.sim_thread = SimulatorThread(self.current_project_path, sim_seconds)
         self.sim_thread.output.connect(self.log_terminal)
         self.sim_thread.start()
+
+    # ---------------------------------------------------------
+    # STOP SIMULATOR
+    # ---------------------------------------------------------
+    def stop_simulator(self):
+        if self.sim_thread and self.sim_thread.isRunning():
+            self.sim_thread.terminate()
+            self.log_terminal("Simulation stopped by user.")
+        else:
+            QMessageBox.information(self, "Simulator", "No simulation is running.")
 
 
 # ---------------------------------------------------------
